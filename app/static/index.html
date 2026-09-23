@@ -151,6 +151,56 @@
           <div id="mxMsg" class="msg"></div>
           <div id="mxResult" hidden></div>
         </div>
+
+        <!-- 引物复测排盘 -->
+        <div id="retestBox" class="retest-box">
+          <div class="result-head">
+            <h3>🔁 引物复测排盘（4×6 孔板 · 完整搜索）</h3>
+            <button id="btnRtExport" class="btn ghost tiny" type="button" disabled>⬇ 下载排盘 JSON</button>
+          </div>
+          <p class="hint">
+            从本任务选 <b>2–6 条引物</b>，每条设 <b>2 或 3 个复孔</b>，可把
+            <b>任意孔位预留为对照</b>（点击孔板上的空格切换「对照 / 可分配」）。
+            同一引物的复孔<b>不同行、不同列</b>；后端使用<b>完整搜索</b>（非逐孔贪心），
+            按引物选择顺序与孔位行优先顺序返回首个有效布局。无可行布局时只给原因，不输出部分方案。
+          </p>
+
+          <div class="rt-section">
+            <div class="rt-section-head">
+              <span class="rt-section-title">① 选择引物（<span id="rtCount">0</span>/2–6，按点击顺序）</span>
+              <button id="btnRtClearPrimers" class="btn ghost tiny" type="button">清空选择</button>
+            </div>
+            <div id="rtPrimerPicker" class="rt-picker"></div>
+          </div>
+
+          <div class="rt-controls">
+            <div class="rt-reps">
+              <label class="field-label">每条引物复孔数</label>
+              <div class="rt-rep-toggle" id="rtRepToggle">
+                <button type="button" data-reps="2">2 复孔</button>
+                <button type="button" data-reps="3" class="on">3 复孔</button>
+              </div>
+            </div>
+            <div class="rt-legend">
+              <span><i class="rt-sw rt-sw-avail"></i>可分配空孔</span>
+              <span><i class="rt-sw rt-sw-ctrl"></i>对照预留</span>
+            </div>
+          </div>
+
+          <div class="rt-section">
+            <div class="rt-section-head">
+              <span class="rt-section-title">② 预留对照孔（点击切换，可留空）</span>
+              <button id="btnRtClearCtrl" class="btn ghost tiny" type="button">清除全部对照</button>
+            </div>
+            <div id="rtPlatePicker" class="rt-plate-picker"></div>
+          </div>
+
+          <div class="rt-runrow">
+            <button id="btnRtRun" class="btn primary" type="button">▶ 排盘</button>
+            <span id="rtMsg" class="msg"></span>
+          </div>
+          <div id="rtResult" hidden></div>
+        </div>
       </div>
     </section>
   </main>

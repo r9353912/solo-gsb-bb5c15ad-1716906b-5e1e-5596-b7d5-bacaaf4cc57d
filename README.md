@@ -17,6 +17,13 @@
 先将同池引物对折叠为分池单元，再搜索不超过上限的 **最少池数**，给出各池成员
 与冲突位点区间；单元内冲突或上限内无法分池时说明原因，绝不输出无效方案。
 
+任务结果页还提供 **引物复测排盘（Retest Plating）**：从历史任务中选
+**2～6 条引物**，为每条设 **2 或 3 个复孔**，并可把 **4×6 孔板（24 孔）的
+任意孔位预留为对照**。后端用 **完整搜索（回溯，非逐孔贪心）** 把复孔分配到
+空孔，保证 **同一引物的复孔不同行、不同列**，按引物选择顺序与孔位行优先顺序
+返回首个有效布局，并给出带行列标记的孔板与每条引物的孔位清单；无可行布局时
+只说明原因，**不输出部分方案**。
+
 技术栈：**FastAPI + SQLite + 原生 HTML/CSS/JS（零构建）**，Docker / Compose
 一键启动。
 
@@ -66,7 +73,9 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 
 | 项目 | 默认值 | 说明 |
 | --- | --- | --- |
-| 服务端口 | `8000` | Compose 中通过 `ports: "8000:8000"` 映射，改宿主机端口写成 `"18000:8000"` |
+| Web 页面端口 | `8000` | 浏览器访问 `http://localhost:8000`（静态页面由同一服务托管） |
+| HTTP API 端口 | `8000` | 与 Web 页面 **同一端口**；接口前缀 `/api/...`，交互式文档 `http://localhost:8000/docs` |
+| 服务端口映射 | `8000:8000` | Compose 中 `ports: "8000:8000"` 映射，改宿主机端口写成 `"18000:8000"`（API 随之在宿主机 18000 端口提供） |
 | `PCR_DB_PATH` | `/data/jobs.db`（容器内） | SQLite 数据库文件路径，挂载到 named volume `pcr-primer-screen-data` 持久化 |
 | 盐浓度 `[Na⁺]` | `0.05` M | 页面/API 可调，范围 0.001–1.5 M |
 | 退火温度 / Tm 阈值 | `25.0` °C | 页面/API 可调，范围 0–95 °C |
@@ -94,7 +103,11 @@ PCR_DB_PATH=./data/jobs.db uvicorn app.main:app --reload
 6. 在结果页底部 **「🧪 多重 PCR 分池」** 勾选 2～12 条引物、添加必须同池
    引物对（互不重叠）并设置池数上限（2～6），点击 **「计算分池」** 查看各池
    成员与冲突位点区间；调整配对或池数上限后可随时重算，并可下载分池 JSON；
-7. 点击 **「导出 JSON」** 下载完整结构化结果；历史任务可在页面底部重新载入或删除。
+7. 在结果页底部 **「🔁 引物复测排盘」** 按顺序勾选 2～6 条引物、选择每条
+   2 或 3 个复孔，并在孔板小键盘上点击预留任意对照孔，点击 **「排盘」** 查看
+   带行列标记的 4×6 孔板与每条引物的孔位清单；调整对照孔或复孔数后可随时重算，
+   并可下载排盘 JSON；
+8. 点击 **「导出 JSON」** 下载完整结构化结果；历史任务可在页面底部重新载入或删除。
 
 ### 输入 JSON 格式
 
@@ -459,6 +472,115 @@ curl -s -X POST "http://localhost:8000/api/jobs/${JOB}/multiplex" \
 
 ---
 
+## 三·补三、引物复测排盘
+
+针对一个 **已保存的历史任务**，选择其中 **2～6 条引物**（选择顺序即方案中
+引物的编号顺序）、为每条设置 **2 或 3 个复孔**，并可把 4 行（A–D）×
+6 列（1–6）共 24 孔中的 **任意孔位预留为对照孔**。后端在扣除对照孔后的空孔中
+分配复孔，要求：
+
+- 每个孔至多放置一个复孔（引物之间也不共用孔）；
+- **同一条引物的复孔两两不在同一行、也不在同一列**（避免行/列方向的系统误差）；
+- 不同引物之间没有行/列限制。
+
+### 搜索方式：完整搜索（非逐孔贪心）
+
+- 按 **引物选择顺序** 逐条放置，每条引物枚举剩余空孔中所有满足「k 个孔两两
+  不同行不同列」的候选组合（`k = 2/3`），候选按 **孔位行优先顺序**
+  （A1 < A2 < … < D6）枚举；
+- 因此回溯找到的 **第一个解** 就是「按引物选择顺序与孔位行优先顺序的首个
+  有效布局」，同一输入结果稳定可复现；
+- 前向剪枝：每放一组复孔，对剩余引物做精确可行性检查——以行优先最小的剩余
+  孔为锚点（属于下一组复孔 / 作为闲置孔）的记忆化递归，配合孔数、行/列容量
+  界（每行至多被每条引物占 1 孔）与「孔-行-列」二分匹配必要条件，不可行分支
+  立即剪去。无可行布局时也能快速穷尽（最坏情况为毫秒级～百毫秒级）。
+
+> 无可行布局时返回 `feasible: false`（**HTTP 200**）并附人类可读 `message`
+> 与诊断原因，**绝不输出部分方案**；页面上对照孔照常显示，但不出现任何引物
+> 孔位。
+
+### 请求
+
+`POST /api/jobs/{job_id}/retest-plate`
+
+```json
+{
+  "primer_ids": ["Hairpin_F1", "Primer_F2", "Primer_R2", "Normal_F3"],
+  "replicates": 3,
+  "control_wells": ["A1", "D6"]
+}
+```
+
+- `primer_ids`：2～6 条，必须全部属于该任务、不可重复；数组顺序即引物选择顺序；
+- `replicates`：整数 `2` 或 `3`；
+- `control_wells`：可省略或为空；孔位写法为行字母 `A`–`D` + 列号 `1`–`6`
+  （大小写均可），不可重复。
+
+仓库提供可直接提交的
+[`examples/retest_plate_request.json`](examples/retest_plate_request.json)。
+
+```bash
+JOB=$(curl -s -X POST http://localhost:8000/api/screen \
+  -H 'Content-Type: application/json' \
+  -d @examples/sample_request.json | python3 -c 'import sys,json;print(json.load(sys.stdin)["job_id"])')
+
+curl -s -X POST "http://localhost:8000/api/jobs/${JOB}/retest-plate" \
+  -H 'Content-Type: application/json' \
+  -d @examples/retest_plate_request.json | python3 -m json.tool
+```
+
+### 错误响应
+
+| 状态码 | 触发条件 |
+| --- | --- |
+| `404` | `job_id` 不存在或已被删除 |
+| `422` | 引物数量不在 2–6、含重复或不属于该任务；复孔数不是 2/3；孔位写法非法（不在 A–D × 1–6 内）或重复；扣除对照孔后空孔容量不足（响应体 `detail` 给出具体原因） |
+
+> 注意：容量不足（如 6 条引物 × 3 复孔需 18 孔但预留后只剩 17 孔）属于
+> **请求可修正错误**，返回 **422**；容量足够但受不同行不同列约束 **不存在
+> 可行布局**（如预留后只剩 2 个开放行却要 3 复孔）属于正常业务结果，返回
+> **200** 且 `feasible: false`。
+
+### 响应结构（节选）
+
+```jsonc
+{
+  "job_id": "64c3a7254648",
+  "plate": {
+    "rows": 4, "columns": 6, "total_wells": 24,
+    "primer_ids": ["Hairpin_F1", "Primer_F2", "Primer_R2", "Normal_F3"],
+    "primer_count": 4,
+    "replicates": 3,
+    "reserved_wells": ["A1", "D6"], "reserved_count": 2,
+    "open_wells": ["A2", "..."], "open_count": 22,
+    "wells_needed": 12,
+    "feasible": true,
+    "reason": null,
+    "message": "已为 4 条引物各分配 3 个复孔……",
+    "grid": [
+      [
+        {"row": "A", "column": 1, "well": "A1", "status": "control"},
+        {"row": "A", "column": 2, "well": "A2", "status": "primer",
+         "primer_index": 1, "primer_id": "Hairpin_F1", "replicate_no": 1}
+        // ……每行 6 格，共 4 行；未使用格 status 为 "empty"
+      ]
+    ],
+    "assignments": [
+      {"primer_index": 1, "primer_id": "Hairpin_F1", "replicates": 3,
+       "wells": ["A2", "B1", "C3"]}
+      // 复孔按孔位行优先顺序编号；不同行、不同列
+    ]
+  }
+}
+```
+
+无可行布局时不含引物分配：`feasible: false`、`reason` 为
+`insufficient_open_rows_or_columns`（开放行/列数少于复孔数）或
+`no_valid_layout`（完整搜索穷尽后仍无解），`assignments` 为空数组，
+`grid` 中只标注对照孔与空孔。
+
+---
+
 ## 四、HTTP API
 
 | 方法 | 路径 | 说明 |
@@ -466,6 +588,7 @@ curl -s -X POST "http://localhost:8000/api/jobs/${JOB}/multiplex" \
 | `POST` | `/api/screen` | 提交引物与参数，执行筛选并落库 |
 | `POST` | `/api/jobs/{job_id}/sensitivity` | 对历史任务执行盐浓度 × Tm 阈值条件敏感性分析 |
 | `POST` | `/api/jobs/{job_id}/multiplex` | 对历史任务中 2–12 条选中引物执行多重 PCR 分池 |
+| `POST` | `/api/jobs/{job_id}/retest-plate` | 对历史任务中 2–6 条引物执行 4×6 孔板复测排盘（2/3 复孔、对照预留、完整搜索） |
 | `GET` | `/api/example` | 获取内置示例请求体 |
 | `GET` | `/api/jobs` | 历史任务列表（最近 50 条） |
 | `GET` | `/api/jobs/{job_id}` | 某任务的请求 + 完整结果 |
@@ -498,7 +621,11 @@ curl -s http://localhost:8000/api/example | curl -s -X POST http://localhost:800
 7. 多重 PCR 分池按任务保存的条件 **重新执行** 第 1–5 步扫描所选引物的全部
    两两异源二聚体（不读已截断明细），以 high/critical 位点为不可同池边；
    必须同池对先经并查集折叠为单元，再对单元冲突图做精确 DSATUR k-着色，
-   从 1 池向上取不超过上限的最小可行池数，无解时以最大团给出色数下界。
+   从 1 池向上取不超过上限的最小可行池数，无解时以最大团给出色数下界；
+8. 引物复测排盘与序列/热力学无关，是纯组合布局问题：在 4×6 孔板扣除对照孔
+   后的空孔中，按引物选择顺序枚举每条引物「k 个两两不同行不同列」的复孔组合
+   （按孔位行优先排序）做完整回溯，辅以记忆化的精确可行性前向检查（锚点递归 +
+   行/列容量界 + 孔-行-列二分匹配）；首个解即行优先意义下的首个有效布局。
 
 纯标准库实现，无 numpy/生物信息学重依赖；30 条约 20–28 nt 的引物全量
 （含所有两两组合）筛选约 0.4 秒。
@@ -509,10 +636,12 @@ curl -s http://localhost:8000/api/example | curl -s -X POST http://localhost:800
 .
 ├── app/
 │   ├── main.py          # FastAPI 路由 + 静态托管
-│   ├── screen.py        # 核心：反对角线扫描、发卡/二聚体、Tm、分级
+│   ├── screen.py        # 核心：反对角线扫描、发卡/二聚体、Tm、分级、多重分池
+│   ├── plating.py       # 引物复测排盘：4×6 孔板完整回溯搜索（复孔不同行不同列）
 │   ├── models.py        # Pydantic 请求模型与输入校验
 │   ├── db.py            # SQLite 任务历史
 │   └── static/          # 原生前端 index.html / styles.css / app.js
+├── examples/            # 可直接提交的示例请求（筛选 / 敏感性 / 分池 / 排盘）
 ├── data/                # 本地运行时的 SQLite 目录（已 gitignore）
 ├── Dockerfile
 ├── docker-compose.yml

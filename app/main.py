@@ -11,7 +11,8 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import db
-from .models import MultiplexRequest, ScreenRequest, SensitivityRequest
+from .models import MultiplexRequest, RetestPlatingRequest, ScreenRequest, SensitivityRequest
+from .plating import PlatingError, retest_plate_layout
 from .screen import MultiplexError, multiplex_partition, screen_primers, sensitivity_scan
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -190,6 +191,39 @@ def post_multiplex(job_id: str, payload: MultiplexRequest) -> dict:
         "job_id": job_id,
         "job_name": job["name"],
         "multiplex": partition,
+    }
+
+
+# ---------------------------------------------------------------------------
+# 引物复测排盘（复用历史任务的引物，在 4×6 孔板上为 2–6 条引物排 2/3 复孔，
+# 预留对照孔，同引物复孔不同行不同列；完整搜索，无解不给部分方案）
+# ---------------------------------------------------------------------------
+
+
+@app.post("/api/jobs/{job_id}/retest-plate")
+def post_retest_plate(job_id: str, payload: RetestPlatingRequest) -> dict:
+    job = db.get_job(job_id)
+    if job is None:
+        raise HTTPException(
+            status_code=404, detail="任务不存在或已被删除，无法执行引物复测排盘"
+        )
+
+    req = job["request"]
+    primers = [(p["id"], p["sequence"]) for p in req["primers"]]
+    try:
+        layout = retest_plate_layout(
+            primers,
+            payload.primer_ids,
+            payload.replicates,
+            payload.control_wells or [],
+        )
+    except PlatingError as exc:
+        # 请求可修正的语义错误（重复引物 / 非法孔位 / 容量不足等）→ 422。
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {
+        "job_id": job_id,
+        "job_name": job["name"],
+        "plate": layout,
     }
 
 

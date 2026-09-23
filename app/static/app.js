@@ -42,12 +42,25 @@ const els = {
   mxMsg: $("#mxMsg"),
   mxResult: $("#mxResult"),
   mxExport: $("#btnMxExport"),
+  rtBox: $("#retestBox"),
+  rtPicker: $("#rtPrimerPicker"),
+  rtCount: $("#rtCount"),
+  rtClearPrimers: $("#btnRtClearPrimers"),
+  rtRepToggle: $("#rtRepToggle"),
+  rtPlatePicker: $("#rtPlatePicker"),
+  rtClearCtrl: $("#btnRtClearCtrl"),
+  rtRun: $("#btnRtRun"),
+  rtMsg: $("#rtMsg"),
+  rtResult: $("#rtResult"),
+  rtExport: $("#btnRtExport"),
 };
 
 let lastResponse = null; // { job_id, result }
 let lastSensitivity = null; // { job_id, sensitivity }
 let lastMultiplex = null; // { job_id, multiplex }
+let lastRetest = null; // { job_id, plate }
 let mxState = { primerIds: [], selected: new Set(), pairs: [] }; // 当前任务引物与表单状态
+let rtState = { primerIds: [], selected: [], reps: 3, controls: new Set() };
 
 /* ---------------- 工具 ---------------- */
 
@@ -155,6 +168,7 @@ function renderResult(data) {
   // 条件敏感性分析需要可引用的历史任务；纯导出态（无 job_id）时隐藏。
   resetSensitivity();
   resetMultiplex(data.result);
+  resetRetest(data.result);
 
   const cards = [
     [r.primer_count, "引物数量"],
@@ -810,6 +824,275 @@ function exportMultiplexJson() {
   URL.revokeObjectURL(a.href);
 }
 
+/* ---------------- 引物复测排盘 ---------------- */
+
+const RT_ROWS = ["A", "B", "C", "D"];
+const RT_COLS = [1, 2, 3, 4, 5, 6];
+
+function setRtMsg(text, kind = "") {
+  els.rtMsg.textContent = text;
+  els.rtMsg.className = "msg" + (kind ? " " + kind : "");
+}
+
+/* 载入新结果时重置排盘面板：引物集合变化时清空选择与对照。 */
+function resetRetest(result) {
+  els.rtBox.hidden = !lastResponse || !lastResponse.job_id;
+  const ids = result.summary.primers.map((p) => p.primer_id);
+  const same = ids.length === rtState.primerIds.length
+    && ids.every((id, i) => id === rtState.primerIds[i]);
+  if (!same) {
+    rtState = {
+      primerIds: ids,
+      selected: ids.slice(0, Math.min(ids.length, 6)),
+      reps: 3,
+      controls: new Set(),
+    };
+  }
+  lastRetest = null;
+  els.rtResult.hidden = true;
+  els.rtResult.innerHTML = "";
+  els.rtExport.disabled = true;
+  setRtMsg("");
+  renderRtForm();
+}
+
+function toggleRtPrimer(id) {
+  const at = rtState.selected.indexOf(id);
+  if (at >= 0) {
+    rtState.selected.splice(at, 1);
+  } else {
+    if (rtState.selected.length >= 6) {
+      setRtMsg("最多选择 6 条引物。", "err");
+      return;
+    }
+    rtState.selected.push(id); // 保留点击（选择）顺序
+  }
+  setRtMsg("");
+  renderRtForm();
+}
+
+function clearRtPrimers() {
+  rtState.selected = [];
+  setRtMsg("");
+  renderRtForm();
+}
+
+function setRtReps(reps) {
+  rtState.reps = reps;
+  setRtMsg("");
+  renderRtForm();
+}
+
+function renderRtForm() {
+  els.rtCount.textContent = rtState.selected.length;
+  els.rtCount.className =
+    rtState.selected.length >= 2 && rtState.selected.length <= 6 ? "rt-ok" : "rt-bad";
+
+  els.rtPicker.innerHTML = rtState.primerIds.map((id) => {
+    const on = rtState.selected.includes(id);
+    const order = on ? rtState.selected.indexOf(id) + 1 : 0;
+    return `<label class="rt-chip${on ? " on" : ""}">
+      <input type="checkbox" data-rtpid="${esc(id)}" ${on ? "checked" : ""} />
+      <span>${esc(id)}</span>${on ? `<i class="rt-order">${order}</i>` : ""}
+    </label>`;
+  }).join("");
+  els.rtPicker.querySelectorAll("[data-rtpid]").forEach((node) =>
+    node.addEventListener("change", () => toggleRtPrimer(node.dataset.rtpid)));
+
+  els.rtRepToggle.querySelectorAll("button").forEach((btn) => {
+    btn.classList.toggle("on", Number(btn.dataset.reps) === rtState.reps);
+  });
+
+  renderRtPlatePicker();
+}
+
+function toggleRtControl(well) {
+  if (rtState.controls.has(well)) rtState.controls.delete(well);
+  else rtState.controls.add(well);
+  setRtMsg("");
+  renderRtPlatePicker();
+}
+
+function clearRtControls() {
+  rtState.controls.clear();
+  setRtMsg("");
+  renderRtPlatePicker();
+}
+
+/* 排盘前用于标记对照孔的可点击 4×6 小键盘（含行列标记）。 */
+function renderRtPlatePicker() {
+  const head = `<tr><th class="rt-corner">行＼列</th>${
+    RT_COLS.map((c) => `<th class="rt-colhead">${c}</th>`).join("")
+  }</tr>`;
+  const rows = RT_ROWS.map((r) => {
+    const tds = RT_COLS.map((c) => {
+      const well = `${r}${c}`;
+      const isCtrl = rtState.controls.has(well);
+      return `<td><button type="button" class="rt-pick ${isCtrl ? "ctrl" : "avail"}"
+        data-well="${well}" title="点击把 ${well} 切换为对照 / 可分配">
+        ${isCtrl ? "CTRL" : well}
+      </button></td>`;
+    }).join("");
+    return `<tr><th class="rt-rowhead">${r}</th>${tds}</tr>`;
+  }).join("");
+  els.rtPlatePicker.innerHTML =
+    `<table class="rt-plate rt-pick-plate"><thead>${head}</thead><tbody>${rows}</tbody></table>`;
+  els.rtPlatePicker.querySelectorAll("[data-well]").forEach((node) =>
+    node.addEventListener("click", () => toggleRtControl(node.dataset.well)));
+}
+
+/* ---- 结果渲染 ---- */
+
+function rtCellClass(cell) {
+  if (cell.status === "control") return "rt-well rt-control";
+  if (cell.status === "empty") return "rt-well rt-empty";
+  return "rt-well rt-used";
+}
+
+function rtCellContent(cell) {
+  if (cell.status === "control") return { main: "CTRL", sub: "对照" };
+  if (cell.status === "empty") return { main: "", sub: "" };
+  const short = cell.primer_id.length > 9 ? cell.primer_id.slice(0, 8) + "…" : cell.primer_id;
+  return { main: esc(short), sub: `#${cell.primer_index} · 复孔 ${cell.replicate_no}` };
+}
+
+function renderRetest(data) {
+  lastRetest = data;
+  const p = data.plate;
+  els.rtResult.hidden = false;
+  els.rtExport.disabled = !p.feasible;
+
+  if (!p.feasible) {
+    setRtMsg("无可行布局。", "err");
+    els.rtResult.innerHTML = `
+      <div class="rt-summary fail">
+        <b>⛔ ${esc(p.message)}</b>
+      </div>
+      ${rtPlateHtml(p, null)}
+      <div class="rt-assign">
+        <h5>各引物孔位清单</h5>
+        <div class="hint" style="margin:4px 0">无可行布局，不输出任何部分方案。</div>
+      </div>`;
+    return;
+  }
+
+  setRtMsg(`排盘完成 ✓ ${p.primer_count} 条引物 × ${p.replicates} 复孔`, "ok");
+  els.rtResult.innerHTML = `
+    <div class="rt-summary ok"><b>✅ ${esc(p.message)}</b></div>
+    ${rtPlateHtml(p, null)}
+    <div class="rt-assign">
+      <h5>各引物孔位清单（按选择顺序）</h5>
+      <ul class="rt-assign-list">
+        ${p.assignments.map((a) => `
+          <li>
+            <span class="rt-assign-no">${a.primer_index}</span>
+            <span class="rt-assign-id" title="${esc(a.primer_id)}">${esc(a.primer_id)}</span>
+            <span class="rt-assign-wells">
+              ${a.wells.map((w) => `<span class="rt-well-tag">${esc(w)}</span>`).join("")}
+            </span>
+          </li>`).join("")}
+      </ul>
+    </div>`;
+}
+
+function rtPlateHtml(p, _unused) {
+  const cellByWell = {};
+  for (const row of p.grid) for (const c of row) cellByWell[c.well] = c;
+
+  const head = `<tr><th class="rt-corner">行＼列</th>${
+    RT_COLS.map((c) => `<th class="rt-colhead">${c}</th>`).join("")
+  }</tr>`;
+
+  const rows = RT_ROWS.map((r) => {
+    const tds = RT_COLS.map((c) => {
+      const cell = cellByWell[`${r}${c}`];
+      const cls = rtCellClass(cell);
+      const { main, sub } = rtCellContent(cell);
+      const title = cell.status === "primer"
+        ? `${cell.well}：${cell.primer_id} 第 ${cell.replicate_no} 复孔`
+        : cell.status === "control" ? `${cell.well}：对照预留孔` : `${cell.well}：空孔`;
+      return `<td class="${cls}" title="${title}">
+        <span class="rt-well-main">${main}</span>
+        ${sub ? `<span class="rt-well-sub">${sub}</span>` : ""}
+      </td>`;
+    }).join("");
+    return `<tr><th class="rt-rowhead">${r}</th>${tds}</tr>`;
+  }).join("");
+
+  const controlText = p.reserved_wells.length
+    ? p.reserved_wells.map((w) => `<span class="rt-well-tag rt-tag-ctrl">${esc(w)}</span>`).join(" ")
+    : "（无）";
+
+  return `
+    <div class="rt-meta">
+      <span>共 ${p.total_wells} 孔</span>
+      <span>对照预留 <b>${p.reserved_count}</b>：${controlText}</span>
+      <span>空孔 ${p.open_count} 个</span>
+      <span>需分配 <b>${p.wells_needed}</b> 孔</span>
+    </div>
+    <div class="rt-plate-scroll">
+      <table class="rt-plate"><thead>${head}</thead><tbody>${rows}</tbody></table>
+    </div>
+    <div class="rt-plate-legend">
+      <span><i class="rt-sw rt-sw-used"></i>引物复孔（数字为引物选择序号）</span>
+      <span><i class="rt-sw rt-sw-ctrl"></i>对照预留</span>
+      <span><i class="rt-sw rt-sw-empty"></i>空孔</span>
+    </div>`;
+}
+
+async function runRetest() {
+  if (!lastResponse || !lastResponse.job_id) {
+    setRtMsg("请先执行或载入一个已保存的历史任务。", "err");
+    return;
+  }
+  const ids = [...rtState.selected];
+  if (ids.length < 2 || ids.length > 6) {
+    setRtMsg(`请选择 2–6 条引物（当前 ${ids.length} 条）。`, "err");
+    return;
+  }
+  if (![2, 3].includes(rtState.reps)) {
+    setRtMsg("复孔数需为 2 或 3。", "err");
+    return;
+  }
+  const payload = {
+    primer_ids: ids,
+    replicates: rtState.reps,
+    control_wells: [...rtState.controls],
+  };
+  els.rtRun.disabled = true;
+  setRtMsg("完整搜索排盘中…");
+  try {
+    const resp = await fetch(`/api/jobs/${lastResponse.job_id}/retest-plate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const body = await resp.json();
+    if (!resp.ok) {
+      const detail = typeof body.detail === "string"
+        ? body.detail
+        : JSON.stringify(body.detail ?? "");
+      setRtMsg("请求失败（" + resp.status + "）：" + detail, "err");
+      return;
+    }
+    renderRetest(body);
+  } catch (e) {
+    setRtMsg("网络错误：" + e.message, "err");
+  } finally {
+    els.rtRun.disabled = false;
+  }
+}
+
+function exportRetestJson() {
+  if (!lastRetest) return;
+  const blob = new Blob([JSON.stringify(lastRetest, null, 2)], { type: "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `primer-retest-plate-${lastRetest.job_id}.json`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
 /* ---------------- 绑定 ---------------- */
 
 els.run.addEventListener("click", runScreen);
@@ -822,5 +1105,11 @@ els.sensExport.addEventListener("click", exportSensitivityJson);
 els.mxAddPair.addEventListener("click", addMxPair);
 els.mxRun.addEventListener("click", runMultiplex);
 els.mxExport.addEventListener("click", exportMultiplexJson);
+els.rtClearPrimers.addEventListener("click", clearRtPrimers);
+els.rtRepToggle.querySelectorAll("button").forEach((btn) =>
+  btn.addEventListener("click", () => setRtReps(Number(btn.dataset.reps))));
+els.rtClearCtrl.addEventListener("click", clearRtControls);
+els.rtRun.addEventListener("click", runRetest);
+els.rtExport.addEventListener("click", exportRetestJson);
 
 loadJobs();

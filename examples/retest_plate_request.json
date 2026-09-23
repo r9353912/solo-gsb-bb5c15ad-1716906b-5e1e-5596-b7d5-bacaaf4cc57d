@@ -1,0 +1,5 @@
+{
+  "primer_ids": ["Hairpin_F1", "Primer_F2", "Primer_R2", "Normal_F3"],
+  "replicates": 3,
+  "control_wells": ["A1", "D6"]
+}

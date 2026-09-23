@@ -17,6 +17,7 @@ from .screen import (
     VALID_BASES,
     clean_sequence,
 )
+from .plating import RETEST_REPLICATE_CHOICES
 
 ID_PATTERN = re.compile(r"^[A-Za-z0-9_.\-]{1,64}$")
 
@@ -199,4 +200,64 @@ class MultiplexRequest(BaseModel):
             cleaned.append(ids)
         if len(cleaned) > MULTIPLEX_MAX_PAIRS:
             raise ValueError(f"必须同池引物对最多 {MULTIPLEX_MAX_PAIRS} 对")
+        return cleaned
+
+
+class RetestPlatingRequest(BaseModel):
+    """引物复测排盘请求：为历史任务中 2-6 条选中引物在 4×6 孔板上排复孔。"""
+
+    primer_ids: list[str] = Field(
+        ...,
+        min_length=2,
+        max_length=6,
+        description="选中的引物 id（按选择顺序排列），2-6 条，需属于该任务且不可重复",
+    )
+    replicates: int = Field(
+        ...,
+        description="每条引物的复孔数，只能为 2 或 3（同一引物复孔不同行不同列）",
+    )
+    control_wells: list[str] | None = Field(
+        default=None,
+        description="预留为对照的孔位（如 A1、C6），任意 4×6 孔位、不可重复；可省略",
+    )
+
+    @field_validator("primer_ids")
+    @classmethod
+    def _check_primer_ids(cls, v: list[str]) -> list[str]:
+        cleaned = []
+        for pid in v:
+            if not isinstance(pid, str):
+                raise ValueError("引物 id 必须为字符串")
+            pid = pid.strip()
+            if not ID_PATTERN.match(pid):
+                raise ValueError(
+                    f"引物 id {pid!r} 不合法（仅允许字母、数字、点、下划线、连字符，1-64 字符）"
+                )
+            cleaned.append(pid)
+        if len(set(cleaned)) != len(cleaned):
+            raise ValueError("选中引物存在重复，请去重后再提交")
+        return cleaned
+
+    @field_validator("replicates")
+    @classmethod
+    def _check_replicates(cls, v: int) -> int:
+        if not isinstance(v, int) or isinstance(v, bool):
+            raise ValueError("复孔数必须为整数 2 或 3")
+        if v not in RETEST_REPLICATE_CHOICES:
+            raise ValueError(
+                f"每条引物的复孔数只能为 {RETEST_REPLICATE_CHOICES[0]} 或 "
+                f"{RETEST_REPLICATE_CHOICES[1]}，当前为 {v}"
+            )
+        return v
+
+    @field_validator("control_wells")
+    @classmethod
+    def _check_control_wells(cls, v: list[str] | None) -> list[str]:
+        if v is None:
+            return []
+        cleaned = []
+        for w in v:
+            if not isinstance(w, str):
+                raise ValueError(f"孔位必须为字符串（形如 A1、C6），收到 {w!r}")
+            cleaned.append(w.strip())
         return cleaned
