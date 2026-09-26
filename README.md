@@ -17,6 +17,12 @@
 先将同池引物对折叠为分池单元，再搜索不超过上限的 **最少池数**，给出各池成员
 与冲突位点区间；单元内冲突或上限内无法分池时说明原因，绝不输出无效方案。
 
+任务结果页还提供 **引物复测排盘（4×6 孔板）**：从本任务选 **2～6 条引物**、
+每条设 **2 或 3 个复孔**，并可预留板上任意孔位给对照；后端做 **完整搜索
+（非逐孔贪心）**，把复孔分配到空孔并强制 **同一引物的复孔互不同行、也互不
+同列**，按引物选择顺序与孔位行优先顺序返回首个有效布局，同时展示带行列标记
+的孔板与每条引物的孔位清单；无可行布局时明确说明、不输出部分方案。
+
 技术栈：**FastAPI + SQLite + 原生 HTML/CSS/JS（零构建）**，Docker / Compose
 一键启动。
 
@@ -94,7 +100,11 @@ PCR_DB_PATH=./data/jobs.db uvicorn app.main:app --reload
 6. 在结果页底部 **「🧪 多重 PCR 分池」** 勾选 2～12 条引物、添加必须同池
    引物对（互不重叠）并设置池数上限（2～6），点击 **「计算分池」** 查看各池
    成员与冲突位点区间；调整配对或池数上限后可随时重算，并可下载分池 JSON；
-7. 点击 **「导出 JSON」** 下载完整结构化结果；历史任务可在页面底部重新载入或删除。
+7. 在结果页底部 **「🧫 引物复测排盘」** 勾选 2～6 条引物（可用 ↑/↓ 调整排盘
+   顺序）、为每条选 2 或 3 个复孔，并在孔板上点击预留任意对照孔位，点击
+   **「排盘」** 查看带行列标记的 4×6 孔板与每条引物的孔位清单；无解时页面
+   明确说明原因，可调整对照或复孔数后重算，并可下载排盘 JSON；
+8. 点击 **「导出 JSON」** 下载完整结构化结果；历史任务可在页面底部重新载入或删除。
 
 ### 输入 JSON 格式
 
@@ -459,6 +469,127 @@ curl -s -X POST "http://localhost:8000/api/jobs/${JOB}/multiplex" \
 
 ---
 
+## 三·补三、引物复测排盘（4×6 孔板）
+
+针对一个 **已保存的历史任务**，选择其中 **2～6 条引物** 做复测，每条指定
+**2 或 3 个复孔**，并可在 **4 行（A–D）× 6 列（1–6）= 24 孔**板上预留任意
+孔位给对照。后端把复孔分配到剩余空孔，并强制：
+
+- 同一引物的任意两个复孔 **不在同一行、也不在同一列**（技术重复跨行列放置，
+  避免行/列方向的系统误差污染同一条引物）；
+- 不同引物的孔位互不重叠；对照孔只预留、不参与分配。
+
+搜索方式为 **完整回溯，而非逐孔贪心**：
+
+1. 预生成空板上 2 复孔（180 种）与 3 复孔（480 种）的全部合法放法，严格按
+   **孔位行优先（row-major）字典序** 排列；
+2. 外层按 **引物选择顺序** 逐条放置，每条引物按行优先枚举候选放法，并调用
+   带记忆化的可行性判定检查尾段，**提交第一个尾段仍可行的候选**，因此输出
+   即「引物顺序 × 孔位行优先」下的首个有效布局，同一输入结果稳定；
+3. 判定中使用空孔总数、逐行/逐列容量与「行×列」二分图最大匹配（Kuhn 增广）
+   等必要条件剪枝——穷举后仍无解才判定不可行，**绝不输出部分方案**；
+4. 6 条引物 × 3 复孔（18 孔）这一最大规模下，典型请求在数十毫秒内完成。
+
+> 排盘只依赖任务保存的引物清单，**不读取筛选/二聚体结果**：复测布局本身
+> 与引物间的互补风险无关。顺序提示：页面里引物的勾选顺序（可用 ↑/↓ 调整）
+> 就是排盘时的引物顺序。
+
+### 请求
+
+`POST /api/jobs/{job_id}/retest-layout`
+
+```json
+{
+  "items": [
+    {"primer_id": "Hairpin_F1", "replicates": 3},
+    {"primer_id": "Primer_F2", "replicates": 2},
+    {"primer_id": "Primer_R2", "replicates": 3},
+    {"primer_id": "Normal_F3", "replicates": 2}
+  ],
+  "control_wells": ["A1", "D6"]
+}
+```
+
+- `items`：2～6 项，顺序即引物排盘顺序；`primer_id` 必须属于该任务且不可
+  重复；`replicates` 只能是 `2` 或 `3`；
+- `control_wells`：可省略或为空；孔位标签为行 `A`–`D` + 列 `1`–`6`
+  （大小写不敏感，如 `a1` 等同 `A1`），不可重复。
+
+仓库提供可直接提交的
+[`examples/retest_plate_request.json`](examples/retest_plate_request.json)。
+
+```bash
+JOB=$(curl -s -X POST http://localhost:8000/api/screen \
+  -H 'Content-Type: application/json' \
+  -d @examples/sample_request.json | python3 -c 'import sys,json;print(json.load(sys.stdin)["job_id"])')
+
+curl -s -X POST "http://localhost:8000/api/jobs/${JOB}/retest-layout" \
+  -H 'Content-Type: application/json' \
+  -d @examples/retest_plate_request.json | python3 -m json.tool
+```
+
+### 错误响应
+
+| 状态码 | 触发条件 |
+| --- | --- |
+| `404` | `job_id` 不存在或已被删除 |
+| `422` | 引物数量不在 2–6 / 引物重复或不属于该任务 / 复孔数不是 2 或 3；孔位标签非法（行号或列号越界）或重复；**复孔总数超过预留对照后的可用孔数（容量不足）**（响应体 `detail` 给出具体原因） |
+
+> 注意：容量充足但 **结构上无解**（例如两行整行被对照占满却仍有 3 复孔
+> 引物、或某列剩余孔不足以让各引物各取一列）属于 **正常业务结果**，返回
+> **200** 且 `feasible: false`，响应中给出可读 `message`、对照孔/剩余空孔
+> 清单与逐行/逐列剩余孔数诊断，而 **不包含** `grid` / 孔位分配（不输出部分
+> 方案）。
+
+### 响应结构（节选）
+
+可行时：
+
+```jsonc
+{
+  "job_id": "151761e482d8",
+  "retest_layout": {
+    "plate": { "rows": 4, "cols": 6, "row_labels": ["A", "B", "C", "D"] },
+    "primer_ids": ["Hairpin_F1", "Primer_F2", "Primer_R2", "Normal_F3"],
+    "primer_count": 4,
+    "items": [
+      { "primer_id": "Hairpin_F1", "replicates": 3,
+        "wells": [
+          { "well": "A2", "row": "A", "col": 2, "replicate_index": 1 },
+          { "well": "B1", "row": "B", "col": 1, "replicate_index": 2 },
+          { "well": "C3", "row": "C", "col": 3, "replicate_index": 3 }
+        ],
+        "rows": ["A", "B", "C"], "cols": [1, 2, 3] }
+      // 每条引物一项：孔位清单 + 占用的行/列
+    ],
+    "control_wells": ["A1", "D6"],
+    "control_count": 2,
+    "replicate_total": 10,
+    "available_wells": 22,
+    "empty_well_count": 12,
+    "feasible": true,
+    "reason": null,
+    "message": "完整搜索找到可行布局：……",
+    "search_nodes": 9,
+    "grid": [
+      // 4 行 × 6 列，每格形如：
+      // { "row": "A", "col": 1, "well": "A1",
+      //   "status": "control" | "primer" | "empty",
+      //   "primer_id": "Hairpin_F1", "replicate_index": 1 }
+    ]
+  }
+}
+```
+
+不可行时（`feasible: false`）不返回 `grid` 与孔位分配，并附带：
+
+- `reason: "no_valid_layout"`；
+- `free_wells`、`free_per_row`、`free_per_col`：剩余空孔及逐行/逐列余量，
+  帮助判断是否整行/整列被对照卡死；
+- `message` 中同时给出对照孔清单与搜索访问的状态数，说明已穷尽排法。
+
+---
+
 ## 四、HTTP API
 
 | 方法 | 路径 | 说明 |
@@ -466,6 +597,7 @@ curl -s -X POST "http://localhost:8000/api/jobs/${JOB}/multiplex" \
 | `POST` | `/api/screen` | 提交引物与参数，执行筛选并落库 |
 | `POST` | `/api/jobs/{job_id}/sensitivity` | 对历史任务执行盐浓度 × Tm 阈值条件敏感性分析 |
 | `POST` | `/api/jobs/{job_id}/multiplex` | 对历史任务中 2–12 条选中引物执行多重 PCR 分池 |
+| `POST` | `/api/jobs/{job_id}/retest-layout` | 对历史任务中 2–6 条引物执行 4×6 孔板复测排盘 |
 | `GET` | `/api/example` | 获取内置示例请求体 |
 | `GET` | `/api/jobs` | 历史任务列表（最近 50 条） |
 | `GET` | `/api/jobs/{job_id}` | 某任务的请求 + 完整结果 |
@@ -498,7 +630,12 @@ curl -s http://localhost:8000/api/example | curl -s -X POST http://localhost:800
 7. 多重 PCR 分池按任务保存的条件 **重新执行** 第 1–5 步扫描所选引物的全部
    两两异源二聚体（不读已截断明细），以 high/critical 位点为不可同池边；
    必须同池对先经并查集折叠为单元，再对单元冲突图做精确 DSATUR k-着色，
-   从 1 池向上取不超过上限的最小可行池数，无解时以最大团给出色数下界。
+   从 1 池向上取不超过上限的最小可行池数，无解时以最大团给出色数下界；
+8. 复测排盘不看序列互补性，只解一个 4×6 孔板上的放置问题：先预生成每条引物
+   全部「互异行、互异列」的复孔组合（按行优先排序），再做两层完整回溯——
+   外层按引物选择顺序逐个提交行优先候选，内层用带记忆化的穷举判定尾段可行性，
+   辅以空孔总数 / 逐行逐列容量 / 二分图最大匹配等必要条件剪枝；穷举无解即
+   明确报告，绝不返回部分布局。
 
 纯标准库实现，无 numpy/生物信息学重依赖；30 条约 20–28 nt 的引物全量
 （含所有两两组合）筛选约 0.4 秒。
@@ -509,10 +646,12 @@ curl -s http://localhost:8000/api/example | curl -s -X POST http://localhost:800
 .
 ├── app/
 │   ├── main.py          # FastAPI 路由 + 静态托管
-│   ├── screen.py        # 核心：反对角线扫描、发卡/二聚体、Tm、分级
+│   ├── screen.py        # 核心：反对角线扫描、发卡/二聚体、Tm、分级、分池/敏感性
+│   ├── plate.py         # 复测排盘：4×6 孔板完整搜索（行/列约束、对照预留）
 │   ├── models.py        # Pydantic 请求模型与输入校验
 │   ├── db.py            # SQLite 任务历史
 │   └── static/          # 原生前端 index.html / styles.css / app.js
+├── examples/            # 可直接提交的请求示例（筛选/敏感性/分池/排盘）
 ├── data/                # 本地运行时的 SQLite 目录（已 gitignore）
 ├── Dockerfile
 ├── docker-compose.yml

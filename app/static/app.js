@@ -42,12 +42,25 @@ const els = {
   mxMsg: $("#mxMsg"),
   mxResult: $("#mxResult"),
   mxExport: $("#btnMxExport"),
+  plBox: $("#plateBox"),
+  plCount: $("#plCount"),
+  plPrimerList: $("#plPrimerList"),
+  plCapacity: $("#plCapacity"),
+  plEditPlate: $("#plEditPlate"),
+  plClearCtrl: $("#btnPlClearCtrl"),
+  plRun: $("#btnPlRun"),
+  plMsg: $("#plMsg"),
+  plResult: $("#plResult"),
+  plExport: $("#btnPlExport"),
 };
 
 let lastResponse = null; // { job_id, result }
 let lastSensitivity = null; // { job_id, sensitivity }
 let lastMultiplex = null; // { job_id, multiplex }
+let lastPlate = null; // { job_id, retest_layout }
 let mxState = { primerIds: [], selected: new Set(), pairs: [] }; // 当前任务引物与表单状态
+/* 排盘表单状态：selected 为 [{id, replicates}]（顺序即排盘顺序）；controls 为对照孔标签集合 */
+let plState = { primerIds: [], selected: [], controls: new Set() };
 
 /* ---------------- 工具 ---------------- */
 
@@ -155,6 +168,7 @@ function renderResult(data) {
   // 条件敏感性分析需要可引用的历史任务；纯导出态（无 job_id）时隐藏。
   resetSensitivity();
   resetMultiplex(data.result);
+  resetPlate(data.result);
 
   const cards = [
     [r.primer_count, "引物数量"],
@@ -810,6 +824,329 @@ function exportMultiplexJson() {
   URL.revokeObjectURL(a.href);
 }
 
+/* ---------------- 引物复测排盘 ---------------- */
+
+const PLATE_ROWS = ["A", "B", "C", "D"];
+const PLATE_COLS = 6;
+
+function setPlMsg(text, kind = "") {
+  els.plMsg.textContent = text;
+  els.plMsg.className = "msg" + (kind ? " " + kind : "");
+}
+
+/* 载入新结果时重置排盘面板：引物集合变化时恢复默认（前 4 条、每条 2 复孔）。 */
+function resetPlate(result) {
+  els.plBox.hidden = !lastResponse || !lastResponse.job_id;
+  const ids = result.summary.primers.map((p) => p.primer_id);
+  const same = ids.length === plState.primerIds.length
+    && ids.every((id, i) => id === plState.primerIds[i]);
+  if (!same) {
+    plState = {
+      primerIds: ids,
+      selected: ids.slice(0, Math.min(ids.length, 6)).map((id) => ({ id, replicates: 2 })),
+      controls: new Set(),
+    };
+  }
+  lastPlate = null;
+  els.plResult.hidden = true;
+  els.plResult.innerHTML = "";
+  els.plExport.disabled = true;
+  setPlMsg("");
+  renderPlateForm();
+}
+
+function plSelectedIds() {
+  return plState.selected.map((s) => s.id);
+}
+
+function plReplicateTotal() {
+  return plState.selected.reduce((n, s) => n + s.replicates, 0);
+}
+
+function togglePlPrimer(id, on) {
+  const ids = plSelectedIds();
+  if (on) {
+    if (ids.length >= 6) {
+      setPlMsg("最多选择 6 条引物。", "err");
+      renderPlateForm();
+      return;
+    }
+    if (!ids.includes(id)) plState.selected.push({ id, replicates: 2 });
+  } else {
+    plState.selected = plState.selected.filter((s) => s.id !== id);
+  }
+  setPlMsg("");
+  renderPlateForm();
+}
+
+function changePlReplicates(id, reps) {
+  const item = plState.selected.find((s) => s.id === id);
+  if (item) item.replicates = reps;
+  renderPlateForm();
+}
+
+function movePlPrimer(index, delta) {
+  const j = index + delta;
+  if (j < 0 || j >= plState.selected.length) return;
+  const arr = plState.selected;
+  [arr[index], arr[j]] = [arr[j], arr[index]];
+  renderPlateForm();
+}
+
+function togglePlControl(well) {
+  if (plState.controls.has(well)) plState.controls.delete(well);
+  else plState.controls.add(well);
+  renderPlateForm();
+}
+
+function renderPlateForm() {
+  const ids = plState.primerIds;
+  const selIds = plSelectedIds();
+  els.plCount.textContent = selIds.length;
+  els.plCount.className = selIds.length >= 2 && selIds.length <= 6 ? "mx-ok" : "mx-bad";
+
+  // ① 引物列表：勾选 + 复孔数 + 排序
+  els.plPrimerList.innerHTML = ids.map((id) => {
+    const idx = selIds.indexOf(id);
+    const on = idx >= 0;
+    const reps = on ? plState.selected[idx].replicates : 2;
+    return `<div class="pl-primer-row${on ? " on" : ""}">
+      <label class="pl-check">
+        <input type="checkbox" data-plpid="${esc(id)}" ${on ? "checked" : ""} />
+        <span class="mono">${esc(id)}</span>
+      </label>
+      ${on ? `
+        <span class="pl-order">
+          第 ${idx + 1} 位
+          <button class="btn tiny ghost" data-plmove="${idx}" data-delta="-1" type="button"
+            ${idx === 0 ? "disabled" : ""}>↑</button>
+          <button class="btn tiny ghost" data-plmove="${idx}" data-delta="1" type="button"
+            ${idx === selIds.length - 1 ? "disabled" : ""}>↓</button>
+        </span>
+        <span class="pl-reps">复孔
+          <label><input type="radio" name="plreps-${esc(id)}" data-plreps="${esc(id)}" value="2"
+            ${reps === 2 ? "checked" : ""} />2</label>
+          <label><input type="radio" name="plreps-${esc(id)}" data-plreps="${esc(id)}" value="3"
+            ${reps === 3 ? "checked" : ""} />3</label>
+        </span>` : ""}
+    </div>`;
+  }).join("");
+
+  els.plPrimerList.querySelectorAll("[data-plpid]").forEach((node) =>
+    node.addEventListener("change", () => togglePlPrimer(node.dataset.plpid, node.checked)));
+  els.plPrimerList.querySelectorAll("[data-plreps]").forEach((node) =>
+    node.addEventListener("change", () =>
+      changePlReplicates(node.dataset.plreps, parseInt(node.value, 10))));
+  els.plPrimerList.querySelectorAll("[data-plmove]").forEach((node) =>
+    node.addEventListener("click", () =>
+      movePlPrimer(Number(node.dataset.plmove), Number(node.dataset.delta))));
+
+  // ② 可编辑孔板（仅对照状态可点）
+  const head = `<tr><th class="pl-corner"></th>${
+    Array.from({ length: PLATE_COLS }, (_, c) => `<th class="pl-colhead">${c + 1}</th>`).join("")
+  }</tr>`;
+  const rows = PLATE_ROWS.map((r) => {
+    const tds = Array.from({ length: PLATE_COLS }, (_, c) => {
+      const well = `${r}${c + 1}`;
+      const isCtrl = plState.controls.has(well);
+      return `<td class="pl-cell pl-cell-edit ${isCtrl ? "control" : "free"}"
+        data-plwell="${well}" title="点击切换对照预留">
+        <span class="pl-well-label">${well}</span>
+        ${isCtrl ? '<span class="pl-ctrl-mark">对照</span>' : ""}
+      </td>`;
+    }).join("");
+    return `<tr><th class="pl-rowhead">${r}</th>${tds}</tr>`;
+  }).join("");
+  els.plEditPlate.innerHTML = head + rows;
+  els.plEditPlate.querySelectorAll("[data-plwell]").forEach((node) =>
+    node.addEventListener("click", () => togglePlControl(node.dataset.plwell)));
+
+  // 容量提示
+  const repsTotal = plReplicateTotal();
+  const ctrlN = plState.controls.size;
+  const avail = PLATE_ROWS.length * PLATE_COLS - ctrlN;
+  const ok = repsTotal <= avail && selIds.length >= 2;
+  els.plCapacity.textContent =
+    `复孔 ${repsTotal} · 对照 ${ctrlN} · 可用 ${avail} 孔`;
+  els.plCapacity.className = "pl-cap " + (ok ? "mx-ok" : "mx-bad");
+}
+
+/* ---- 结果渲染 ---- */
+
+/* 为每个引物序号取一个稳定的展示色（与 item_index 对应）。 */
+const PL_PRIMER_COLORS = [
+  "#4f9dff", "#4dd599", "#ffd166", "#ff9f43", "#c792ea", "#5ad1e0",
+];
+
+function renderPlate(data) {
+  lastPlate = data;
+  const pl = data.retest_layout;
+  els.plResult.hidden = false;
+  els.plExport.disabled = false;
+
+  if (!pl.feasible) {
+    setPlMsg("完整搜索未找到可行布局（无部分方案）。", "err");
+    const rowLine = pl.free_per_row.map((x) => `${x.row}行 ${x.free} 孔`).join("，");
+    const colLine = pl.free_per_col.map((x) => `第${x.col}列 ${x.free} 孔`).join("，");
+    els.plResult.innerHTML = `
+      <div class="pl-summary fail">
+        <b>⛔ ${esc(pl.message)}</b>
+        <div class="pl-diag">
+          <div>对照孔（${pl.control_count}）：${
+            pl.control_wells.length
+              ? pl.control_wells.map((w) => `<span class="pl-tag ctrl">${esc(w)}</span>`).join(" ")
+              : "（无）"
+          }</div>
+          <div>剩余空孔（${pl.free_wells.length}）：${
+            pl.free_wells.map((w) => `<span class="pl-tag free">${esc(w)}</span>`).join(" ")
+          }</div>
+          <div class="hint" style="margin:6px 0 0">每行剩余：${rowLine}；每列剩余：${colLine}。</div>
+        </div>
+      </div>
+      ${plateTableHtml(pl)}
+      <p class="hint">提示：3 复孔要求同一引物占据 3 个不同行与 3 个不同列——当对照孔让某行/某列
+        剩余孔数过少时便会无解。可减少对照、避免整行/整列预留，或把部分引物改为 2 复孔后重试。</p>`;
+    return;
+  }
+
+  setPlMsg(`排盘完成 ✓ ${pl.primer_count} 条引物 / ${pl.replicate_total} 个复孔已就位`, "ok");
+
+  const legend = pl.items.map((it, i) => `
+    <span class="pl-legend-item">
+      <i class="pl-swatch" style="background:${PL_PRIMER_COLORS[i % PL_PRIMER_COLORS.length]}"></i>
+      <span class="mono">${esc(it.primer_id)}</span>
+      <span class="hint" style="margin:0">×${it.replicates}</span>
+    </span>`).join("");
+
+  const primerLists = pl.items.map((it, i) => {
+    const color = PL_PRIMER_COLORS[i % PL_PRIMER_COLORS.length];
+    const wells = it.wells
+      .map((w) => `<span class="pl-tag primer" style="border-color:${color};color:${color}">
+          ${esc(w.well)}<em>复${w.replicate_index}</em></span>`)
+      .join(" ");
+    return `<li>
+      <span class="pl-list-id">
+        <i class="pl-swatch" style="background:${color}"></i>
+        <b class="mono">${esc(it.primer_id)}</b>
+        <span class="hint" style="margin:0">${it.replicates} 复孔 · 行 ${it.rows.join("/")} · 列 ${it.cols.join("/")}</span>
+      </span>
+      <span class="pl-list-wells">${wells}</span>
+    </li>`;
+  }).join("");
+
+  els.plResult.innerHTML = `
+    <div class="pl-summary ok">
+      <b>✅ ${esc(pl.message)}</b>
+      <span class="hint" style="margin:0">完整搜索访问 ${pl.search_nodes} 个状态；
+        同一引物的复孔互不同行、互不同列，孔位互不重叠。</span>
+    </div>
+    <div class="pl-legend">
+      ${legend}
+      <span class="pl-legend-item"><i class="pl-swatch ctrl"></i>对照</span>
+      <span class="pl-legend-item"><i class="pl-swatch empty"></i>空孔</span>
+    </div>
+    <div class="pl-output-wrap">
+      ${plateTableHtml(pl, false)}
+      <div class="pl-well-lists">
+        <h5>每条引物的孔位清单</h5>
+        <ul>${primerLists}</ul>
+      </div>
+    </div>`;
+}
+
+/* 生成带行/列标记的 4×6 孔板（feasible 与 infeasible 结果共用）。 */
+function plateTableHtml(pl) {
+  const owner = {};
+  if (pl.feasible) {
+    pl.items.forEach((it, idx) => {
+      const color = PL_PRIMER_COLORS[idx % PL_PRIMER_COLORS.length];
+      it.wells.forEach((w) => { owner[w.well] = { it, color }; });
+    });
+  }
+  const controlSet = new Set(pl.control_wells);
+  const head = `<tr><th class="pl-corner"></th>${
+    Array.from({ length: pl.plate.cols }, (_, c) => `<th class="pl-colhead">${c + 1}</th>`).join("")
+  }</tr>`;
+  const rows = pl.plate.row_labels.map((r) => {
+    const tds = Array.from({ length: pl.plate.cols }, (_, ci) => {
+      const well = `${r}${ci + 1}`;
+      if (controlSet.has(well)) {
+        return `<td class="pl-cell control" title="对照预留 ${well}">
+          <span class="pl-well-label">${well}</span><span class="pl-ctrl-mark">对照</span></td>`;
+      }
+      const own = owner[well];
+      if (own) {
+        const w = own.it.wells.find((x) => x.well === well);
+        return `<td class="pl-cell primer" style="border-color:${own.color};background:${own.color}22"
+          title="${esc(own.it.primer_id)} 复孔 ${w.replicate_index}（${well}）">
+          <span class="pl-well-label">${well}</span>
+          <span class="pl-pid">${esc(own.it.primer_id)}</span>
+          <span class="pl-rep">复${w.replicate_index}</span>
+        </td>`;
+      }
+      return `<td class="pl-cell empty" title="空孔 ${well}">
+        <span class="pl-well-label">${well}</span></td>`;
+    }).join("");
+    return `<tr><th class="pl-rowhead">${r}</th>${tds}</tr>`;
+  }).join("");
+  return `<table class="plate-table result">${head}${rows}</table>`;
+}
+
+async function runPlate() {
+  if (!lastResponse || !lastResponse.job_id) {
+    setPlMsg("请先执行或载入一个已保存的历史任务。", "err");
+    return;
+  }
+  if (plState.selected.length < 2 || plState.selected.length > 6) {
+    setPlMsg(`请选择 2–6 条引物（当前 ${plState.selected.length} 条）。`, "err");
+    return;
+  }
+  const repsTotal = plReplicateTotal();
+  const avail = PLATE_ROWS.length * PLATE_COLS - plState.controls.size;
+  if (repsTotal > avail) {
+    setPlMsg(
+      `容量不足：共需 ${repsTotal} 个复孔，预留 ${plState.controls.size} 个对照孔后仅剩 ${avail} 孔。`,
+      "err");
+    return;
+  }
+  const payload = {
+    items: plState.selected.map((s) => ({ primer_id: s.id, replicates: s.replicates })),
+    control_wells: [...plState.controls],
+  };
+  els.plRun.disabled = true;
+  setPlMsg("完整搜索排盘中…");
+  try {
+    const resp = await fetch(`/api/jobs/${lastResponse.job_id}/retest-layout`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const body = await resp.json();
+    if (!resp.ok) {
+      const detail = typeof body.detail === "string"
+        ? body.detail
+        : JSON.stringify(body.detail ?? "");
+      setPlMsg("请求失败（" + resp.status + "）：" + detail, "err");
+      return;
+    }
+    renderPlate(body);
+  } catch (e) {
+    setPlMsg("网络错误：" + e.message, "err");
+  } finally {
+    els.plRun.disabled = false;
+  }
+}
+
+function exportPlateJson() {
+  if (!lastPlate) return;
+  const blob = new Blob([JSON.stringify(lastPlate, null, 2)], { type: "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `primer-retest-plate-${lastPlate.job_id}.json`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
 /* ---------------- 绑定 ---------------- */
 
 els.run.addEventListener("click", runScreen);
@@ -822,5 +1159,12 @@ els.sensExport.addEventListener("click", exportSensitivityJson);
 els.mxAddPair.addEventListener("click", addMxPair);
 els.mxRun.addEventListener("click", runMultiplex);
 els.mxExport.addEventListener("click", exportMultiplexJson);
+els.plClearCtrl.addEventListener("click", () => {
+  plState.controls = new Set();
+  setPlMsg("");
+  renderPlateForm();
+});
+els.plRun.addEventListener("click", runPlate);
+els.plExport.addEventListener("click", exportPlateJson);
 
 loadJobs();

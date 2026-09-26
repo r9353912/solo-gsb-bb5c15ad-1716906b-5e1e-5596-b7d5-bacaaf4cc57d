@@ -1,0 +1,9 @@
+{
+  "items": [
+    {"primer_id": "Hairpin_F1", "replicates": 3},
+    {"primer_id": "Primer_F2", "replicates": 2},
+    {"primer_id": "Primer_R2", "replicates": 3},
+    {"primer_id": "Normal_F3", "replicates": 2}
+  ],
+  "control_wells": ["A1", "D6"]
+}

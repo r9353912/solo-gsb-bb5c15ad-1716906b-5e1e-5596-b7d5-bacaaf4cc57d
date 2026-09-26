@@ -17,6 +17,13 @@ from .screen import (
     VALID_BASES,
     clean_sequence,
 )
+from .plate import (
+    PLATE_WELL_COUNT,
+    RETEST_MAX_PRIMERS,
+    RETEST_MAX_REPLICATES,
+    RETEST_MIN_PRIMERS,
+    RETEST_MIN_REPLICATES,
+)
 
 ID_PATTERN = re.compile(r"^[A-Za-z0-9_.\-]{1,64}$")
 
@@ -199,4 +206,74 @@ class MultiplexRequest(BaseModel):
             cleaned.append(ids)
         if len(cleaned) > MULTIPLEX_MAX_PAIRS:
             raise ValueError(f"必须同池引物对最多 {MULTIPLEX_MAX_PAIRS} 对")
+        return cleaned
+
+
+class RetestItem(BaseModel):
+    """一条参与复测排盘的引物及其复孔数。"""
+
+    primer_id: str = Field(..., description="本任务中的引物 id")
+    replicates: int = Field(
+        ...,
+        ge=RETEST_MIN_REPLICATES,
+        le=RETEST_MAX_REPLICATES,
+        description=f"复孔数（{RETEST_MIN_REPLICATES} 或 {RETEST_MAX_REPLICATES}）",
+    )
+
+    @field_validator("primer_id")
+    @classmethod
+    def _check_primer_id(cls, v: str) -> str:
+        if not isinstance(v, str):
+            raise ValueError("引物 id 必须为字符串")
+        v = v.strip()
+        if not ID_PATTERN.match(v):
+            raise ValueError(
+                f"引物 id {v!r} 不合法（仅允许字母、数字、点、下划线、连字符，1-64 字符）"
+            )
+        return v
+
+
+class RetestPlateRequest(BaseModel):
+    """引物复测排盘请求：2–6 条引物、每条 2–3 复孔、可预留对照孔。"""
+
+    items: list[RetestItem] = Field(
+        ...,
+        min_length=RETEST_MIN_PRIMERS,
+        max_length=RETEST_MAX_PRIMERS,
+        description=(
+            f"参与复测的引物（按此顺序排盘），{RETEST_MIN_PRIMERS}-"
+            f"{RETEST_MAX_PRIMERS} 条，不可重复，需全部属于该任务"
+        ),
+    )
+    control_wells: list[str] = Field(
+        default_factory=list,
+        max_length=PLATE_WELL_COUNT,
+        description=(
+            "预留给对照的孔位标签（行 A-D × 列 1-6，如 A1、D6），可省略；"
+            "大小写不敏感，不可重复"
+        ),
+    )
+
+    @field_validator("items")
+    @classmethod
+    def _check_items(cls, v: list[RetestItem]) -> list[RetestItem]:
+        ids = [item.primer_id for item in v]
+        if len(set(ids)) != len(ids):
+            dup = sorted({pid for pid in ids if ids.count(pid) > 1})
+            raise ValueError(
+                f"复测引物存在重复：{'、'.join(dup)}，同一条引物只能选择一次"
+            )
+        return v
+
+    @field_validator("control_wells")
+    @classmethod
+    def _check_control_wells(cls, v: list[str]) -> list[str]:
+        cleaned: list[str] = []
+        for raw in v:
+            if not isinstance(raw, str):
+                raise ValueError("对照孔位需为字符串标签，如 A1、D6")
+            cleaned.append(raw.strip().upper())
+        if len(set(cleaned)) != len(cleaned):
+            dup = sorted({w for w in cleaned if cleaned.count(w) > 1})
+            raise ValueError(f"对照孔位存在重复：{'、'.join(dup)}")
         return cleaned

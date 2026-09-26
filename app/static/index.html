@@ -151,6 +151,50 @@
           <div id="mxMsg" class="msg"></div>
           <div id="mxResult" hidden></div>
         </div>
+
+        <!-- 引物复测排盘 -->
+        <div id="plateBox" class="plate-box">
+          <div class="result-head">
+            <h3>🧫 引物复测排盘（4×6 孔板）</h3>
+            <button id="btnPlExport" class="btn ghost tiny" type="button" disabled>⬇ 下载排盘 JSON</button>
+          </div>
+          <p class="hint">
+            从本任务选 <b>2–6 条引物</b>，每条设 <b>2 或 3 个复孔</b>，并可在
+            <b>4 行（A–D）× 6 列（1–6）= 24 孔</b>板上<b>预留任意孔位给对照</b>
+            （点击下方孔板中的空格切换对照预留）。后端用<b>完整搜索（非逐孔贪心）</b>
+            把复孔分配到空孔，保证<b>同一引物的复孔互不同行、也互不同列</b>，
+            并按引物选择顺序与孔位行优先顺序返回首个有效布局；无可行布局时会明确说明，
+            不输出部分方案。
+          </p>
+
+          <div class="mx-section">
+            <div class="mx-section-head">
+              <span class="mx-section-title">① 选择引物与复孔数（<span id="plCount">0</span>/2–6，顺序即排盘顺序）</span>
+            </div>
+            <div id="plPrimerList" class="pl-primer-list"></div>
+          </div>
+
+          <div class="mx-section">
+            <div class="mx-section-head">
+              <span class="mx-section-title">② 预留对照孔（点击孔格切换，可留空）</span>
+              <span class="pl-cap" id="plCapacity"></span>
+            </div>
+            <div class="pl-editplate-wrap">
+              <table class="plate-table edit" id="plEditPlate"></table>
+            </div>
+            <div class="pl-edit-actions">
+              <button id="btnPlClearCtrl" class="btn ghost tiny" type="button">清空对照</button>
+              <span class="hint" style="margin:0">灰底斜纹 = 对照预留；其余空格等待分配复孔。</span>
+            </div>
+          </div>
+
+          <div class="mx-runrow">
+            <button id="btnPlRun" class="btn primary" type="button">▶ 排盘</button>
+          </div>
+          <div id="plMsg" class="msg"></div>
+
+          <div id="plResult" hidden></div>
+        </div>
       </div>
     </section>
   </main>
